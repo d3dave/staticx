@@ -23,7 +23,7 @@ class StaticxGenerator:
     """StaticxGenerator is responsible for producing a staticx-ified executable.
     """
 
-    def __init__(self, prog, strip=False, compress=True, debug=False, cleanup=True):
+    def __init__(self, prog, strip=False, compress='xz', debug=False, cleanup=True):
         """
         Parameters:
         prog:   Dynamic executable to staticx
@@ -294,7 +294,7 @@ class StaticxGenerator:
                   force_rpath=True, no_default_lib=True)
 
 
-def generate(prog, output, libs=None, strip=False, compress=True, debug=False):
+def generate(prog, output, libs=None, strip=False, compress='xz', debug=False):
     """Main API: Generate a staticx executable
 
     Parameters:

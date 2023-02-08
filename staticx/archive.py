@@ -1,6 +1,7 @@
 import tarfile
 import logging
 import lzma
+import gzip
 from os.path import basename
 
 from .bcjfilter import get_bcj_filter_arch
@@ -35,7 +36,7 @@ def get_xz_filters():
     return filters
 
 class SxArchive:
-    def __init__(self, fileobj, mode, compress):
+    def __init__(self, fileobj, mode, compress = 'xz'):
         """Create a staticx archive
 
         Parameters:
@@ -47,7 +48,7 @@ class SxArchive:
         self.fileobj = fileobj
         self.xzf = None
 
-        if compress:
+        if compress == 'xz':
             self.xzf = lzma.open(
                 filename = fileobj,
                 mode = mode,
@@ -60,6 +61,13 @@ class SxArchive:
                 filters = get_xz_filters(),
             )
 
+            fileobj = self.xzf
+        elif compress == 'gzip':
+            self.xzf = gzip.open(
+                filename = fileobj,
+                mode = mode,
+                compresslevel=6,
+            )
             fileobj = self.xzf
 
         # Our embedded libtar only supports older GNU format (not new PAX format)
