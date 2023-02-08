@@ -22,8 +22,10 @@ def parse_args():
             help = 'Add additional libraries (absolute paths)')
     ap.add_argument('--strip', action='store_true',
             help = 'Strip binaries before adding to archive (reduces size)')
-    ap.add_argument('--no-compress', action='store_true',
+    ap.add_argument('--no-compress', action='store_const', dest='compress', const='',
             help = "Don't compress the archive (increases size)")
+    ap.add_argument('--compress', choices=['xz', 'gzip'], default='xz',
+            help = "Choose compression format (%(choices)s)")
 
     # Special / output-related options
     ap.add_argument('-V', '--version', action='version',
@@ -49,7 +51,7 @@ def main():
         generate(args.prog, args.output,
                 libs = args.libs,
                 strip = args.strip,
-                compress = not args.no_compress,
+                compress = args.compress,
                 debug = args.debug,
                 )
     except Error as e:
