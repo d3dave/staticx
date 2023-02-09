@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <libtar.h>
+#include <zlib.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
@@ -12,9 +13,15 @@
 #include "xz.h"
 
 #define XZ_DICT_MAX     8<<20       /* 8 MiB */
+#define COMPRESS_NONE   0
+#define COMPRESS_XZ     1
+#define COMPRESS_GZ     2
 
-static int common_close(void *context);
+static int mem_close(void *context);
+static int xz_close(void *context);
+static int gz_close(void *context);
 static ssize_t xz_read(void *context, void *buf, size_t const len);
+static ssize_t gz_read(void *context, void *buf, size_t const len);
 static ssize_t mem_read(void *context, void *buf, size_t len);
 
 /* Extraction context */
@@ -24,12 +31,17 @@ struct exctx {
     /* This is used by both the xztype and memtype tar handlers */
     struct xz_buf buf;
 
-    /* Used only for xz; NULL otherwise */
-    struct xz_dec *xzdec;
+    union {
+        /* Used only for xz; NULL otherwise */
+        struct xz_dec *xzdec;
+
+        /* Used only for gzip; */
+        z_stream *zstrm;
+    };
 };
 
 static struct exctx *
-exctx_new(const void *data, size_t datalen, bool xz)
+exctx_new(const void *data, size_t datalen, int compress)
 {
     struct exctx *ctx;
 
@@ -38,14 +50,6 @@ exctx_new(const void *data, size_t datalen, bool xz)
     if (!ctx) {
         error(2, 0, "Failed to allocate exctx");
         return NULL;
-    }
-
-    /* Setup tartype */
-    {
-        tartype_t *typ = &ctx->tartype;
-
-        typ->closefunc = common_close;
-        typ->readfunc = xz ? xz_read : mem_read;
     }
 
     /* Initialize buffer descriptor */
@@ -61,28 +65,66 @@ exctx_new(const void *data, size_t datalen, bool xz)
         b->out_size = 0;
     }
 
+    /* Setup tartype */
+    tartype_t *typ = &ctx->tartype;
+
     /* Initialize XZ decoder */
-    if (xz) {
+    if (compress == COMPRESS_XZ) {
+        typ->readfunc = xz_read;
+        typ->closefunc = xz_close;
         ctx->xzdec = xz_dec_init(XZ_DYNALLOC, XZ_DICT_MAX);
         if (!ctx->xzdec) {
             error(2, 0, "Failed to initialize xz decoder");
             return NULL;
         }
     }
+    else if (compress == COMPRESS_GZ) {
+        typ->readfunc = gz_read;
+        typ->closefunc = gz_close;
+
+        ctx->zstrm = malloc(sizeof(*ctx->zstrm));
+        if (!ctx->zstrm) {
+            error(2, 0, "Failed to allocate z_stream");
+            return NULL;
+        }
+        ctx->zstrm->next_in = data;
+        ctx->zstrm->avail_in = datalen;
+        ctx->zstrm->zalloc = Z_NULL;
+        ctx->zstrm->zfree = Z_NULL;
+        ctx->zstrm->opaque = Z_NULL;
+        if (inflateInit(ctx->zstrm) != Z_OK)
+        {
+            error(2, 0, "Failed to init z_stream");
+            return NULL;
+        }
+    }
+    else {
+        typ->readfunc = mem_read;
+        typ->closefunc = mem_close;
+    }
 
     return ctx;
 }
 
-static int common_close(void *context)
+static int mem_close(void *context)
 {
     struct exctx *ctx = context;
-
-    if (ctx->xzdec) {
-        xz_dec_end(ctx->xzdec);
-    }
-
     free(ctx);
     return 0;
+}
+
+static int xz_close(void *context)
+{
+    struct exctx *ctx = context;
+    xz_dec_end(ctx->xzdec);
+    return mem_close(context);
+}
+
+static int gz_close(void *context)
+{
+    struct exctx *ctx = context;
+    inflateEnd(ctx->zstrm);
+    return mem_close(context);
 }
 
 static const char * xzret_to_str(enum xz_ret r)
@@ -146,6 +188,42 @@ static bool is_xz_file(const char *buf, size_t len)
 
 /*******************************************************************************/
 
+static ssize_t gz_read(void *context, void *const buf, size_t const len)
+{
+    struct exctx *ctx = context;
+    struct xz_buf *b = &ctx->buf;
+
+    /* Decompress into given output buffer */
+    b->out = buf;
+    b->out_pos = 0;
+    b->out_size = len;
+
+    /* Always attempt to fill the given output buffer */
+    while (b->out_pos != b->out_size)
+    {
+
+        /* Run! */
+        enum xz_ret xr = xz_dec_run(ctx->xzdec, b);
+        switch (xr)
+        {
+        case XZ_OK:
+                continue;
+
+        case XZ_STREAM_END:
+                /* Return 0 to indicate EOF */
+                return 0;
+
+        default:
+                error(2, 0, "xz_dec_run returned %s (%d)\n", xzret_to_str(xr), xr);
+                return -1;
+        }
+    }
+
+    return len;
+}
+
+/*******************************************************************************/
+
 static ssize_t mem_read(void *context, void * const buf, size_t len)
 {
     struct exctx *ctx = context;
@@ -183,7 +261,7 @@ static TAR *tar_smart_bufopen(const struct archive ar, int options)
     struct exctx *ctx = exctx_new(ar.data, ar.size, xz);
 
     /* Open the tar file */
-    return tar_new(ctx, &ctx->tartype, options);
+    return tar_new(ctx, &ctx->tartype, TAR_CHECK_MAGIC | TAR_CHECK_VERSION | options);
 }
 
 static struct archive

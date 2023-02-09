@@ -33,6 +33,7 @@ bootloader = env.Program(
     LIBS = [
         'tar',
         'xz',
+        'z',
     ],
 )
 
